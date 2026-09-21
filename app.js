@@ -66,7 +66,7 @@ const state = {
   sheetOpen: false
 };
 
-const artURLs = new Map();   // albumKey -> object URL
+const artURLs = new Map();   // albumKey -> { url, type }
 let currentAudioURL = null;
 
 const audio = new Audio();
@@ -225,7 +225,7 @@ async function importFiles(fileList) {
         const artBlob = new Blob([tags.picture.data], { type: tags.picture.mime });
         await dbPut('art', artBlob, track.albumKey);
         haveArt.add(track.albumKey);
-        artURLs.set(track.albumKey, URL.createObjectURL(artBlob));
+        artURLs.set(track.albumKey, { url: URL.createObjectURL(artBlob), type: artBlob.type });
       }
 
       state.tracks.push(track);
@@ -417,7 +417,7 @@ function updateMediaSession(track) {
     artist: track.artist,
     album: track.album
   };
-  if (art) meta.artwork = [{ src: art, sizes: '512x512', type: 'image/jpeg' }];
+  if (art) meta.artwork = [{ src: art.url, sizes: '512x512', type: art.type || 'image/jpeg' }];
   try { navigator.mediaSession.metadata = new MediaMetadata(meta); } catch { /* older Safari */ }
 
   const set = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* unsupported */ } };
@@ -500,8 +500,8 @@ async function deleteTrack(id) {
  * Views
  * ------------------------------------------------------------------ */
 function artHTML(albumKey, cls) {
-  const url = artURLs.get(albumKey);
-  if (url) return '<div class="art ' + cls + '" style="background-image:url(' + url + ')"></div>';
+  const art = artURLs.get(albumKey);
+  if (art) return '<div class="art ' + cls + '" style="background-image:url(' + art.url + ')"></div>';
   return '<div class="art ' + cls + ' empty">' + noteSVG() + '</div>';
 }
 
@@ -1040,7 +1040,7 @@ async function wipeAll() {
   for (const s of ['tracks', 'audio', 'art', 'playlists', 'meta']) {
     await idb(s, 'readwrite', (o) => o.clear());
   }
-  for (const url of artURLs.values()) URL.revokeObjectURL(url);
+  for (const art of artURLs.values()) URL.revokeObjectURL(art.url);
   artURLs.clear();
   Object.assign(state, { tracks: [], playlists: [], queue: [], queueIndex: -1, detail: null });
   render();
@@ -1060,7 +1060,7 @@ async function boot() {
   const artKeys = await dbKeys('art');
   for (const k of artKeys) {
     const blob = await dbGet('art', k);
-    if (blob) artURLs.set(k, URL.createObjectURL(blob));
+    if (blob) artURLs.set(k, { url: URL.createObjectURL(blob), type: blob.type });
   }
 
   const session = await dbGet('meta', 'session');
