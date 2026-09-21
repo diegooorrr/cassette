@@ -7,7 +7,7 @@ import { readTags } from './tags.js';
  * the library never drags hundreds of megabytes of audio into memory.
  * ------------------------------------------------------------------ */
 const DB_NAME = 'cassette';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbHandle = null;
 
 function openDB() {
@@ -26,6 +26,7 @@ function openDB() {
       if (!db.objectStoreNames.contains('art')) db.createObjectStore('art');
       if (!db.objectStoreNames.contains('playlists')) db.createObjectStore('playlists', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+      if (!db.objectStoreNames.contains('remote')) db.createObjectStore('remote');
     };
     req.onsuccess = () => { dbHandle = req.result; resolve(dbHandle); };
     req.onerror = () => reject(req.error);
@@ -63,7 +64,12 @@ const state = {
   shuffle: false,
   repeat: 'off',         // 'off' | 'all' | 'one'
   importing: null,       // { done, total, label }
-  sheetOpen: false
+  sheetOpen: false,
+  server: '',            // music server base URL, '' when not configured
+  serverState: 'idle',   // 'idle' | 'checking' | 'ok' | 'error'
+  serverMsg: '',
+  serverDraft: null,     // what is typed in the server box, before connecting
+  serverSync: null       // { done, total } while reading tags off the server
 };
 
 const artURLs = new Map();   // albumKey -> { url, type }
@@ -278,6 +284,238 @@ async function requestPersistence() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Music server
+ *
+ * The server hands over a file list and nothing else. Tags are read here,
+ * from the first chunk of each file via a range request, with the same
+ * parser the local import uses — so the box on the shelf stays dumb and
+ * dependency-free. Results are cached, so a normal launch costs one small
+ * JSON fetch and nothing more.
+ * ------------------------------------------------------------------ */
+const REMOTE_HEAD_BYTES = 384 * 1024;
+const REMOTE_WHOLE_FILE_CAP = 24 * 1024 * 1024;
+
+function normalizeServer(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const withScheme = /^https?:\/\//i.test(s) ? s : 'https://' + s;
+  return withScheme.replace(/\/+$/, '');
+}
+
+const remoteFileURL = (base, id) => base + '/api/file/' + encodeURIComponent(id);
+
+async function fetchRange(url, start, end) {
+  const res = await fetch(url, { headers: { Range: 'bytes=' + start + '-' + end } });
+  if (!res.ok && res.status !== 206) throw new Error('HTTP ' + res.status);
+  return res.arrayBuffer();
+}
+
+// Most formats do not carry duration in their tags, so let an audio element
+// report it — that only pulls enough of the file to read the header.
+function probeRemoteDuration(url) {
+  return new Promise((resolve) => {
+    const probe = new Audio();
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      probe.removeAttribute('src');
+      resolve(isFinite(v) && v > 0 ? v : 0);
+    };
+    const timer = setTimeout(() => finish(0), 15000);
+    probe.onloadedmetadata = () => finish(probe.duration);
+    probe.onerror = () => finish(0);
+    probe.preload = 'metadata';
+    probe.src = url;
+  });
+}
+
+async function describeRemote(base, entry) {
+  const url = remoteFileURL(base, entry.id);
+  const stem = entry.name.replace(/\.[^.]+$/, '');
+  let tags = null;
+
+  try {
+    const head = await fetchRange(url, 0, Math.min(REMOTE_HEAD_BYTES, entry.size) - 1);
+    tags = await readTags(new File([head], entry.name));
+
+    // A few containers keep their metadata at the end of the file. If the head
+    // told us nothing, re-read in full — but only when that is cheap.
+    const headWasUseless = tags.title === stem && tags.album === 'Unknown Album';
+    if (headWasUseless && entry.size > REMOTE_HEAD_BYTES && entry.size <= REMOTE_WHOLE_FILE_CAP) {
+      const whole = await (await fetch(url)).arrayBuffer();
+      const better = await readTags(new File([whole], entry.name));
+      if (better.title !== stem || better.album !== 'Unknown Album') tags = better;
+    }
+  } catch {
+    tags = null;
+  }
+
+  if (!tags) tags = await readTags(new File([new ArrayBuffer(0)], entry.name));
+  const duration = await probeRemoteDuration(url);
+  return { tags, duration };
+}
+
+function remoteTrackFrom(base, rec) {
+  const t = {
+    id: 'remote:' + rec.id,
+    serverId: rec.id,
+    remote: true,
+    src: remoteFileURL(base, rec.id),
+    title: rec.title, artist: rec.artist, album: rec.album,
+    albumArtist: rec.albumArtist, year: rec.year, genre: rec.genre,
+    trackNo: rec.trackNo, discNo: rec.discNo,
+    duration: rec.duration, size: rec.size, mime: rec.mime,
+    fileName: rec.name, addedAt: (rec.mtime || 0) * 1000, playCount: 0
+  };
+  t.albumKey = albumKeyFor(t);
+  t.artistKey = keyOf(primaryArtist(t.artist));
+  return t;
+}
+
+const dropRemoteTracks = () => { state.tracks = state.tracks.filter((t) => !t.remote); };
+
+// Show whatever we already know about the server's library, so a phone with no
+// route to the Pi still renders the shelf instead of an empty screen.
+async function showCachedRemote() {
+  if (!state.server) return;
+  const offline = new Set(state.tracks.filter((t) => !t.remote && t.serverId).map((t) => t.serverId));
+  const recs = await dbAll('remote');
+  dropRemoteTracks();
+  for (const rec of recs) {
+    if (!offline.has(rec.id)) state.tracks.push(remoteTrackFrom(state.server, rec));
+  }
+}
+
+async function syncServer(opts = {}) {
+  const base = state.server;
+  if (!base) return;
+
+  state.serverState = 'checking';
+  state.serverMsg = '';
+  render();
+
+  let entries;
+  try {
+    const res = await fetch(base + '/api/index.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('server answered ' + res.status);
+    const data = await res.json();
+    entries = Array.isArray(data.tracks) ? data.tracks : [];
+  } catch (err) {
+    state.serverState = 'error';
+    state.serverMsg = err.message || 'could not reach it';
+    await showCachedRemote();
+    render();
+    if (!opts.quiet) toast('Could not reach the music server');
+    return;
+  }
+
+  const cached = new Map((await dbAll('remote')).map((r) => [r.id, r]));
+  const offline = new Set(state.tracks.filter((t) => !t.remote && t.serverId).map((t) => t.serverId));
+  const haveArt = new Set(await dbKeys('art'));
+  const stale = entries.filter((e) => {
+    const c = cached.get(e.id);
+    return !c || c.mtime !== e.mtime;
+  });
+
+  if (stale.length) {
+    state.importing = { done: 0, total: stale.length, label: 'reading tags' };
+    render();
+  }
+
+  const fresh = [];
+  for (const entry of entries) {
+    let rec = cached.get(entry.id);
+
+    if (!rec || rec.mtime !== entry.mtime) {
+      const { tags, duration } = await describeRemote(base, entry);
+      rec = {
+        id: entry.id, name: entry.name, path: entry.path, size: entry.size,
+        mtime: entry.mtime, mime: entry.mime, duration,
+        title: tags.title, artist: tags.artist, album: tags.album,
+        albumArtist: tags.albumArtist, year: tags.year, genre: tags.genre,
+        trackNo: tags.trackNo, discNo: tags.discNo
+      };
+      await dbPut('remote', rec, entry.id);
+      cached.set(entry.id, rec);
+
+      const probe = remoteTrackFrom(base, rec);
+      if (tags.picture && !haveArt.has(probe.albumKey)) {
+        const blob = new Blob([tags.picture.data], { type: tags.picture.mime });
+        await dbPut('art', blob, probe.albumKey);
+        haveArt.add(probe.albumKey);
+        artURLs.set(probe.albumKey, { url: URL.createObjectURL(blob), type: blob.type });
+      }
+
+      state.importing.done++;
+      state.importing.label = rec.title;
+      renderImport();
+    }
+
+    if (!offline.has(entry.id)) fresh.push(remoteTrackFrom(base, rec));
+  }
+
+  const live = new Set(entries.map((e) => e.id));
+  for (const id of cached.keys()) if (!live.has(id)) await dbDel('remote', id);
+
+  dropRemoteTracks();
+  state.tracks.push(...fresh);
+  state.importing = null;
+  state.serverState = 'ok';
+  state.serverMsg = fresh.length + ' streaming';
+  render();
+}
+
+async function connectServer(raw) {
+  const base = normalizeServer(raw);
+  state.server = base;
+  await dbPut('meta', base, 'server');
+  if (!base) {
+    dropRemoteTracks();
+    state.serverState = 'idle';
+    state.serverMsg = '';
+    await idb('remote', 'readwrite', (o) => o.clear());
+    render();
+    return;
+  }
+  await syncServer();
+}
+
+// Keep a streamed track on the device, so it survives the Pi being unplugged.
+async function saveOffline(track) {
+  if (!track || !track.remote) return;
+  state.importing = { done: 0, total: 1, label: track.title };
+  render();
+  try {
+    const res = await fetch(track.src);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const file = new File([blob], track.fileName, { type: track.mime || blob.type });
+    const id = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now());
+
+    const local = Object.assign({}, track, {
+      id, remote: false, addedAt: Date.now(), playCount: 0
+    });
+    delete local.src;
+
+    await dbPut('audio', file, id);
+    await dbPut('tracks', local);
+
+    state.queue = state.queue.map((q) => (q === track.id ? id : q));
+    state.tracks = state.tracks.filter((t) => t.id !== track.id);
+    state.tracks.push(local);
+    state.importing = null;
+    toast('Saved on this device');
+  } catch (err) {
+    state.importing = null;
+    toast('Could not save: ' + (err.message || 'failed'));
+  }
+  render();
+}
+
+
+/* ------------------------------------------------------------------ *
  * Playback
  * ------------------------------------------------------------------ */
 function shuffled(ids, firstId) {
@@ -302,14 +540,21 @@ async function loadCurrent(autoplay) {
   const track = byId(state.queue[state.queueIndex]);
   if (!track) return;
 
-  const blob = await dbGet('audio', track.id);
-  if (!blob) { toast('That file is missing from storage'); return; }
+  let src;
+  if (track.remote) {
+    src = track.src;                       // streamed straight off the server
+  } else {
+    const blob = await dbGet('audio', track.id);
+    if (!blob) { toast('That file is missing from storage'); return; }
+    src = URL.createObjectURL(blob);
+  }
 
   const previousURL = currentAudioURL;
-  currentAudioURL = URL.createObjectURL(blob);
-  audio.src = currentAudioURL;
+  currentAudioURL = track.remote ? null : src;
+  audio.src = src;
   if (previousURL) URL.revokeObjectURL(previousURL);
 
+  intendPlay = !!autoplay;
   if (autoplay) {
     try { await audio.play(); }
     catch (err) { console.warn('play blocked', err); }
@@ -325,8 +570,8 @@ function togglePlay() {
     if (all.length) playList(all, 0);
     return;
   }
-  if (audio.paused) audio.play().catch(() => {});
-  else audio.pause();
+  if (audio.paused) { intendPlay = true; audio.play().catch(() => {}); }
+  else { intendPlay = false; audio.pause(); }
 }
 
 function next(userInitiated) {
@@ -392,7 +637,7 @@ function queueLast(id) {
 
 audio.addEventListener('ended', () => {
   const t = byId(state.queue[state.queueIndex]);
-  if (t) { t.playCount = (t.playCount || 0) + 1; dbPut('tracks', t); }
+  if (t && !t.remote) { t.playCount = (t.playCount || 0) + 1; dbPut('tracks', t); }
   next(false);
 });
 audio.addEventListener('play', render);
@@ -400,8 +645,24 @@ audio.addEventListener('pause', () => { render(); saveSession(); });
 audio.addEventListener('timeupdate', () => { renderProgress(); throttledSave(); });
 // If files have gone missing, skip forward — but never loop the queue forever.
 let consecutiveFailures = 0;
+let intendPlay = false;
+
 audio.addEventListener('error', () => {
   if (!audio.src) return;
+
+  // A restored queue is only preloaded. Failing to preload is not a reason to
+  // go hunting through the rest of the queue.
+  if (!intendPlay) return;
+
+  const failed = byId(state.queue[state.queueIndex]);
+  if (failed && failed.remote && state.serverState !== 'ok') {
+    consecutiveFailures = 0;
+    intendPlay = false;
+    audio.pause();
+    toast('Your music server is not reachable');
+    return;
+  }
+
   consecutiveFailures++;
   if (consecutiveFailures >= Math.max(1, state.queue.length)) {
     consecutiveFailures = 0;
@@ -527,13 +788,18 @@ function artHTML(albumKey, cls) {
   return '<div class="art ' + cls + ' empty">' + noteSVG() + '</div>';
 }
 
+const streamSVG = () =>
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 13a9 9 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/></svg>';
+
 const noteSVG = () =>
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
 
 function trackRow(t, index, opts = {}) {
   const isNow = state.queue[state.queueIndex] === t.id;
+  const unreachable = t.remote && state.serverState === 'error';
   return (
-    '<li class="row track' + (isNow ? ' now' : '') + '" data-play="' + index + '">' +
+    '<li class="row track' + (isNow ? ' now' : '') + (unreachable ? ' unavailable' : '') +
+      '" data-play="' + index + '">' +
       (opts.showArt === false
         ? '<span class="num">' + (t.trackNo || index + 1) + '</span>'
         : artHTML(t.albumKey, 'sm')) +
@@ -541,6 +807,7 @@ function trackRow(t, index, opts = {}) {
         '<span class="t1">' + esc(t.title) + '</span>' +
         '<span class="t2">' + esc(opts.sub || artistText(t.artist)) + '</span>' +
       '</span>' +
+      (t.remote ? '<span class="stream" aria-label="Streams from your server">' + streamSVG() + '</span>' : '') +
       '<span class="dur">' + (t.duration ? fmtTime(t.duration) : '') + '</span>' +
       '<button class="more" data-menu="' + esc(t.id) + '" aria-label="More options">' +
         '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>' +
@@ -739,27 +1006,57 @@ function render() {
 }
 
 function viewSettings() {
-  const totalBytes = state.tracks.reduce((n, t) => n + (t.size || 0), 0);
+  const local = state.tracks.filter((t) => !t.remote);
+  const streamed = state.tracks.filter((t) => t.remote);
+  const totalBytes = local.reduce((n, t) => n + (t.size || 0), 0);
   const totalSecs = state.tracks.reduce((n, t) => n + (t.duration || 0), 0);
   const hours = Math.floor(totalSecs / 3600);
   const mins = Math.round((totalSecs % 3600) / 60);
+
+  const status = {
+    idle: 'Not connected',
+    checking: 'Checking\u2026',
+    ok: 'Connected \u00b7 ' + esc(state.serverMsg),
+    error: 'Cannot reach it \u00b7 ' + esc(state.serverMsg)
+  }[state.serverState] || '';
+
+  const box = state.serverDraft === null ? state.server : state.serverDraft;
+
   return (
     '<div class="settings">' +
       headerBar('Library', '') +
       '<div class="stats">' +
         '<div><b>' + state.tracks.length + '</b><span>songs</span></div>' +
         '<div><b>' + albums().length + '</b><span>albums</span></div>' +
-        '<div><b>' + fmtBytes(totalBytes) + '</b><span>on device</span></div>' +
-        '<div><b>' + hours + 'h ' + mins + 'm</b><span>of music</span></div>' +
+        '<div><b>' + local.length + '</b><span>on this phone</span></div>' +
+        '<div><b>' + streamed.length + '</b><span>on the server</span></div>' +
       '</div>' +
-      '<button class="btn primary wide" data-act="import">Add music</button>' +
+
+      headerBar('Music server', '') +
+      '<div class="server">' +
+        '<input id="serverurl" type="url" inputmode="url" autocapitalize="off" ' +
+          'autocorrect="off" spellcheck="false" placeholder="https://your-pi.tailnet.ts.net" ' +
+          'value="' + esc(box) + '">' +
+        '<div class="server-row">' +
+          '<button class="btn small primary" data-act="server-connect">' +
+            (state.server ? 'Reconnect' : 'Connect') + '</button>' +
+          (state.server ? '<button class="btn small" data-act="server-refresh">Refresh</button>' : '') +
+          (state.server ? '<button class="btn small danger" data-act="server-forget">Forget</button>' : '') +
+        '</div>' +
+        '<p class="status ' + state.serverState + '">' + status + '</p>' +
+      '</div>' +
+
+      headerBar('On this phone', '') +
+      '<p class="hint small">' + fmtBytes(totalBytes) + ' stored \u00b7 ' +
+        hours + 'h ' + mins + 'm of music in the library</p>' +
+      '<button class="btn primary wide" data-act="import">Add music from this phone</button>' +
       '<p class="hint" id="quota">Checking storage…</p>' +
       '<div class="about">' +
         '<h3>How this works</h3>' +
-        '<p>Your songs are stored inside this app on your phone. Nothing is uploaded, and playback never touches the network — airplane mode is fine.</p>' +
+        '<p>Songs you add from this phone are stored inside the app and play with no internet at all. Songs on your music server stream over your private network, and any you save are kept here too.</p>' +
         '<p>Keep it on your Home Screen. Removing the app from the Home Screen can let iOS clear its storage, so hold on to the original files as your backup.</p>' +
       '</div>' +
-      '<button class="btn danger wide" data-act="wipe">Erase all music</button>' +
+      '<button class="btn danger wide" data-act="wipe">Erase downloaded music</button>' +
     '</div>'
   );
 }
@@ -881,7 +1178,11 @@ function openMenu(trackId) {
       plItems +
       '<button data-mact="newpl">Add to new playlist…</button>' +
       (inPlaylist ? '<button data-mact="rmpl">Remove from this playlist</button>' : '') +
-      '<button class="danger" data-mact="delete">Delete from library</button>' +
+      (t.remote
+        ? '<button data-mact="save">Save on this device</button>'
+        : t.serverId
+          ? '<button class="danger" data-mact="unsave">Remove the offline copy</button>'
+          : '<button class="danger" data-mact="delete">Delete from library</button>') +
       '<button class="cancel" data-mact="cancel">Cancel</button>' +
     '</div>';
   $('#menu').dataset.track = trackId;
@@ -918,6 +1219,11 @@ function wire() {
   }));
 
   $('#search').addEventListener('input', (e) => { state.search = e.target.value; render(); });
+
+  // Hold the typed server address across re-renders so it is not wiped mid-edit.
+  $('#view').addEventListener('input', (e) => {
+    if (e.target.id === 'serverurl') state.serverDraft = e.target.value;
+  });
 
   // One delegated handler for the whole scrolling view.
   $('#view').addEventListener('click', async (e) => {
@@ -964,6 +1270,16 @@ function wire() {
       }
       case 'del-playlist':
         if (confirm('Delete this playlist? The songs stay in your library.')) await deletePlaylist(act.dataset.id);
+        break;
+      case 'server-connect': {
+        const raw = state.serverDraft === null ? state.server : state.serverDraft;
+        state.serverDraft = null;
+        await connectServer(raw);
+        break;
+      }
+      case 'server-refresh': await syncServer(); break;
+      case 'server-forget':
+        if (confirm('Forget this server? Songs you saved on the phone stay.')) await connectServer('');
         break;
       case 'wipe':
         if (confirm('Erase every song from this app? Your original files are untouched.')) await wipeAll();
@@ -1023,6 +1339,13 @@ function wire() {
       }
       case 'rmpl': await removeFromPlaylist(state.detail.key, id); break;
       case 'delete': if (confirm('Delete this song from the app?')) await deleteTrack(id); break;
+      case 'save': await saveOffline(byId(id)); break;
+      case 'unsave':
+        if (confirm('Remove the copy on this phone? It stays on your music server.')) {
+          await deleteTrack(id);
+          if (state.server) await syncServer({ quiet: true });
+        }
+        break;
     }
     closeMenu();
   });
@@ -1097,14 +1420,16 @@ async function showQuota() {
 async function wipeAll() {
   audio.pause();
   audio.removeAttribute('src');
-  for (const s of ['tracks', 'audio', 'art', 'playlists', 'meta']) {
-    await idb(s, 'readwrite', (o) => o.clear());
+  for (const name of ['tracks', 'audio', 'art', 'playlists', 'remote']) {
+    await idb(name, 'readwrite', (o) => o.clear());
   }
+  await dbDel('meta', 'session');
   for (const art of artURLs.values()) URL.revokeObjectURL(art.url);
   artURLs.clear();
   Object.assign(state, { tracks: [], playlists: [], queue: [], queueIndex: -1, detail: null });
   render();
-  toast('Library erased');
+  toast('Downloaded music erased');
+  if (state.server) await syncServer({ quiet: true });   // the server shelf comes back
 }
 
 /* ------------------------------------------------------------------ *
@@ -1151,6 +1476,9 @@ async function boot() {
     if (blob) artURLs.set(k, { url: URL.createObjectURL(blob), type: blob.type });
   }
 
+  state.server = (await dbGet('meta', 'server')) || '';
+  if (state.server) await showCachedRemote();
+
   const session = await dbGet('meta', 'session');
   if (session && Array.isArray(session.queue)) {
     const live = new Set(state.tracks.map((t) => t.id));
@@ -1166,6 +1494,10 @@ async function boot() {
 
   render();
   $('#splash').remove();
+
+  // Refresh the server shelf in the background; a slow or absent Pi must never
+  // hold up the songs already on the phone.
+  if (state.server) syncServer({ quiet: true });
 
   if ('serviceWorker' in navigator) {
     // When a new version takes over, pick it up straight away — but never yank

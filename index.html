@@ -89,6 +89,7 @@ body.has-player #view{padding-bottom:calc(var(--tabh) + var(--minih) + 8px)}
 }
 .row:active{background:var(--bg2)}
 .row.now .t1{color:var(--accent)}
+.row.unavailable{opacity:.45}
 .meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
 .t1{font-size:16px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .t2{font-size:13.5px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -138,6 +139,23 @@ body.has-player #view{padding-bottom:calc(var(--tabh) + var(--minih) + 8px)}
 .empty-state p{color:var(--fg2);font-size:15px;margin:10px 0 22px;line-height:1.5}
 .hint{color:var(--fg2);font-size:14.5px;padding:20px 20px;text-align:center;line-height:1.5}
 .hint.small{padding:8px 16px;text-align:left;font-size:13.5px}
+
+/* ---------- streaming marker + server box ---------- */
+.stream{color:var(--fg3);flex:none;display:grid;place-items:center;width:18px;height:18px}
+.stream svg{width:15px;height:15px}
+.row.now .stream{color:var(--accent)}
+
+.server{padding:0 16px}
+#serverurl{
+  width:100%;padding:11px 13px;border-radius:11px;border:1px solid var(--line);
+  background:var(--bg2);color:var(--fg);font-size:15px;outline:none;
+}
+#serverurl:focus{border-color:var(--accent)}
+.server-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.status{font-size:13px;margin:10px 0 4px;color:var(--fg2)}
+.status.ok{color:#4ade80}
+.status.error{color:#f87171}
+.status.checking{color:var(--accent)}
 
 /* ---------- settings ---------- */
 .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 16px}

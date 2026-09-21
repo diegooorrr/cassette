@@ -38,6 +38,52 @@ that has been removed from the Home Screen, so treat the phone copy as a copy.
 
 On a desktop browser you can also drag a folder of music straight onto the window.
 
+## Streaming from your own server
+
+Cassette can also play from a music server you run — a Raspberry Pi is ideal,
+since it can stay on all the time and costs nothing to keep running. You drop
+files on the Pi, and they appear on the phone without any transfer step.
+
+The server in `server/` does one job: list a folder and serve byte ranges out
+of it. It reads no tags and has no dependencies beyond Python 3, because the
+app already has a tested tag reader and pulls the first chunk of each file to
+use it. Cached after the first read, so a launch costs one small JSON request.
+
+### On the Pi
+
+```
+git clone https://github.com/diegooorrr/cassette
+sudo ./cassette/server/install.sh
+```
+
+That installs the server, runs it under systemd so it comes back after a
+reboot, and puts it behind `tailscale serve`, which gives it a real HTTPS
+certificate on your private tailnet. HTTPS is required: the app is served over
+HTTPS and browsers refuse to load audio from a plain-HTTP origin.
+
+Tailnet HTTPS certificates are free but off by default — enable them once at
+<https://login.tailscale.com/admin/dns> under *HTTPS Certificates*.
+
+### On your Mac
+
+```
+./server/push-music.sh ~/Downloads/SomeAlbum
+```
+
+### On your phone
+
+Install Tailscale from the App Store and sign in — the Pi is only reachable
+inside your own tailnet, never from the open internet. Then in Cassette open
+**Library → Music server**, paste the `https://…ts.net` address the installer
+printed, and tap Connect.
+
+Everything on the server shows up alongside anything stored on the phone,
+marked with a small signal icon. Tap **Save on this device** on any track to
+keep a copy for when the Pi is unreachable.
+
+If the server is down, the library still renders — server tracks appear dimmed
+and tell you so rather than failing silently.
+
 ## Running it yourself
 
 It is five static files with no build step and no dependencies. Serve the
@@ -57,3 +103,6 @@ python3 -m http.server 8791
 | `tags.js` | Metadata reader (no dependencies) |
 | `sw.js` | Service worker — makes the app shell work offline |
 | `manifest.webmanifest` | Home Screen name, icon, standalone display |
+| `server/cassette-server.py` | Optional music server: file list + byte ranges |
+| `server/install.sh` | Sets it up on a Pi under systemd + tailscale serve |
+| `server/push-music.sh` | Copies music from your computer to the Pi |
