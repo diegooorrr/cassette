@@ -958,7 +958,7 @@ function wire() {
 
   // Now playing sheet
   $('#sheet').addEventListener('click', (e) => {
-    if (e.target.closest('.np-close')) return closeSheet();
+    if (e.target.closest('.np-close, .np-grab')) return closeSheet();
     if (e.target.closest('.np-play')) return togglePlay();
     if (e.target.closest('.np-next')) return next(true);
     if (e.target.closest('.np-prev')) return prev();
@@ -967,6 +967,8 @@ function wire() {
     const jump = e.target.closest('[data-jump]');
     if (jump) { state.queueIndex = Number(jump.dataset.jump); loadCurrent(true); }
   });
+
+  wireSheetSwipe();
 
   const seek = $('#seek');
   const startDrag = () => { seek.dataset.dragging = '1'; };
@@ -1019,6 +1021,42 @@ function wire() {
     if (e.code === 'ArrowLeft') prev();
     if (e.code === 'Escape') { closeMenu(); closeSheet(); }
   });
+}
+
+// Drag the sheet down to dismiss it — only from the top, so the queue
+// underneath still scrolls normally.
+function wireSheetSwipe() {
+  const sheet = $('#sheet');
+  let startY = null;
+  let offset = 0;
+
+  sheet.addEventListener('touchstart', (e) => {
+    if (sheet.scrollTop > 0 || e.touches.length !== 1) { startY = null; return; }
+    if (e.target.closest('#seek')) { startY = null; return; }
+    startY = e.touches[0].clientY;
+    offset = 0;
+  }, { passive: true });
+
+  sheet.addEventListener('touchmove', (e) => {
+    if (startY === null) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy <= 0) return;
+    e.preventDefault();
+    offset = dy;
+    sheet.classList.add('dragging');
+    sheet.style.transform = 'translateY(' + dy + 'px)';
+  }, { passive: false });
+
+  const release = () => {
+    if (startY === null) return;
+    sheet.classList.remove('dragging');
+    sheet.style.transform = '';
+    if (offset > 90) closeSheet();
+    startY = null;
+    offset = 0;
+  };
+  sheet.addEventListener('touchend', release);
+  sheet.addEventListener('touchcancel', release);
 }
 
 async function showQuota() {
@@ -1080,6 +1118,15 @@ async function boot() {
   $('#splash').remove();
 
   if ('serviceWorker' in navigator) {
+    // When a new version takes over, pick it up straight away — but never yank
+    // the page out from under playback, and never on the very first visit.
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading || !audio.paused) return;
+      reloading = true;
+      location.reload();
+    });
     navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('sw', err));
   }
   requestPersistence();

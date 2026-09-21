@@ -187,8 +187,18 @@ body.has-player #view{padding-bottom:calc(var(--tabh) + var(--minih) + 8px)}
   overflow-y:auto;
 }
 #sheet.open{transform:translateY(0)}
-.np-close{align-self:center;width:44px;height:26px;display:grid;place-items:center;color:var(--fg2);flex:none}
-.np-close i{display:block;width:38px;height:5px;border-radius:3px;background:#ffffff2e}
+#sheet{overscroll-behavior:contain}
+#sheet.dragging{transition:none}
+.np-top{display:flex;align-items:center;gap:8px;flex:none}
+.np-close,.np-top-spacer{width:44px;height:44px;flex:none}
+.np-close{
+  display:grid;place-items:center;border-radius:50%;
+  background:#ffffff14;color:var(--fg);
+}
+.np-close svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.np-close:active{background:#ffffff2e}
+.np-grab{flex:1;height:44px;display:grid;place-items:center}
+.np-grab i{display:block;width:46px;height:5px;border-radius:3px;background:#ffffff4d}
 .np-art{margin:14px 0 26px}
 .np-info{min-width:0}
 .np-title{font-size:22px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -295,7 +305,13 @@ body.sheet-open #view{overflow:hidden}
 </div>
 
 <section id="sheet" aria-label="Now playing">
-  <button class="np-close" aria-label="Close"><i></i></button>
+  <div class="np-top">
+    <button class="np-close" aria-label="Close now playing">
+      <svg viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></svg>
+    </button>
+    <button class="np-grab" aria-label="Close now playing"><i></i></button>
+    <span class="np-top-spacer"></span>
+  </div>
   <div class="np-art"></div>
   <div class="np-info">
     <div class="np-title"></div>

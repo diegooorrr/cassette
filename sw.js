@@ -1,6 +1,6 @@
 // Cassette service worker — makes the app itself work with no network.
 // Your music never touches this cache; songs live in IndexedDB on the device.
-const VERSION = 'cassette-v1';
+const VERSION = 'cassette-v2';
 const SHELL = [
   './',
   './index.html',
