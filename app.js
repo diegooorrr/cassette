@@ -79,7 +79,26 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const keyOf = (s) => String(s || '').trim().toLowerCase();
-const albumKeyFor = (t) => keyOf(t.albumArtist) + '::' + keyOf(t.album);
+
+// Tags routinely cram every credited artist into one field: "Drake/21 Savage".
+// Split those so a feature shows up under both artists — but leave alone names
+// that genuinely contain a slash, which are short ones like AC/DC.
+const UNSPLITTABLE = new Set(['ac/dc']);
+
+function artistList(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return ['Unknown Artist'];
+  if (s.length <= 6 || UNSPLITTABLE.has(s.toLowerCase())) return [s];
+  const parts = s.split(/\s*[\/;]\s*/).map((x) => x.trim()).filter(Boolean);
+  return parts.length ? parts : [s];
+}
+
+const primaryArtist = (raw) => artistList(raw)[0];
+const artistText = (raw) => artistList(raw).join(', ');
+
+// An album belongs to its lead artist; otherwise one record splits into a
+// separate tile for every guest feature on it.
+const albumKeyFor = (t) => keyOf(primaryArtist(t.albumArtist)) + '::' + keyOf(t.album);
 
 function fmtTime(sec) {
   if (!isFinite(sec) || sec < 0) sec = 0;
@@ -125,7 +144,7 @@ function albums() {
   for (const t of state.tracks) {
     let a = map.get(t.albumKey);
     if (!a) {
-      a = { key: t.albumKey, album: t.album, artist: t.albumArtist, year: t.year, tracks: [] };
+      a = { key: t.albumKey, album: t.album, artist: primaryArtist(t.albumArtist), year: t.year, tracks: [] };
       map.set(t.albumKey, a);
     }
     a.tracks.push(t);
@@ -138,10 +157,13 @@ function albums() {
 function artists() {
   const map = new Map();
   for (const t of state.tracks) {
-    let a = map.get(t.artistKey);
-    if (!a) { a = { key: t.artistKey, name: t.artist, tracks: [], albums: new Set() }; map.set(t.artistKey, a); }
-    a.tracks.push(t);
-    a.albums.add(t.albumKey);
+    for (const name of artistList(t.artist)) {
+      const k = keyOf(name);
+      let a = map.get(k);
+      if (!a) { a = { key: k, name, tracks: [], albums: new Set() }; map.set(k, a); }
+      a.tracks.push(t);
+      a.albums.add(t.albumKey);
+    }
   }
   return [...map.values()].sort((x, y) =>
     x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }));
@@ -216,7 +238,7 @@ async function importFiles(fileList) {
         playCount: 0
       };
       track.albumKey = albumKeyFor(track);
-      track.artistKey = keyOf(track.artist);
+      track.artistKey = keyOf(primaryArtist(track.artist));
 
       await dbPut('audio', file, id);
       await dbPut('tracks', track);
@@ -414,7 +436,7 @@ function updateMediaSession(track) {
   const art = artURLs.get(track.albumKey);
   const meta = {
     title: track.title,
-    artist: track.artist,
+    artist: artistText(track.artist),
     album: track.album
   };
   if (art) meta.artwork = [{ src: art.url, sizes: '512x512', type: art.type || 'image/jpeg' }];
@@ -517,7 +539,7 @@ function trackRow(t, index, opts = {}) {
         : artHTML(t.albumKey, 'sm')) +
       '<span class="meta">' +
         '<span class="t1">' + esc(t.title) + '</span>' +
-        '<span class="t2">' + esc(opts.sub || t.artist) + '</span>' +
+        '<span class="t2">' + esc(opts.sub || artistText(t.artist)) + '</span>' +
       '</span>' +
       '<span class="dur">' + (t.duration ? fmtTime(t.duration) : '') + '</span>' +
       '<button class="more" data-menu="' + esc(t.id) + '" aria-label="More options">' +
@@ -770,13 +792,13 @@ function renderPlayer() {
 
   mini.querySelector('.mini-art').innerHTML = artHTML(t.albumKey, 'sm');
   mini.querySelector('.mini-title').textContent = t.title;
-  mini.querySelector('.mini-artist').textContent = t.artist;
+  mini.querySelector('.mini-artist').textContent = artistText(t.artist);
   mini.querySelector('.mini-play').innerHTML = playing ? pauseIcon() : playIcon();
   mini.querySelector('.mini-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
 
   sheet.querySelector('.np-art').innerHTML = artHTML(t.albumKey, 'xl');
   sheet.querySelector('.np-title').textContent = t.title;
-  sheet.querySelector('.np-artist').textContent = t.artist;
+  sheet.querySelector('.np-artist').textContent = artistText(t.artist);
   sheet.querySelector('.np-album').textContent = t.album === 'Unknown Album' ? '' : t.album;
   sheet.querySelector('.np-play').innerHTML = playing ? pauseIcon(34) : playIcon(34);
   sheet.querySelector('.np-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
@@ -790,7 +812,7 @@ function renderPlayer() {
         '<li class="row" data-jump="' + (state.queueIndex + 1 + i) + '">' +
           artHTML(q.albumKey, 'sm') +
           '<span class="meta"><span class="t1">' + esc(q.title) + '</span>' +
-          '<span class="t2">' + esc(q.artist) + '</span></span>' +
+          '<span class="t2">' + esc(artistText(q.artist)) + '</span></span>' +
         '</li>').join('') + '</ul>'
     : '<h4>Up next</h4><p class="hint small">End of queue.</p>';
 
@@ -852,7 +874,7 @@ function openMenu(trackId) {
     '<div class="menu-card">' +
       '<div class="menu-head">' + artHTML(t.albumKey, 'sm') +
         '<span class="meta"><span class="t1">' + esc(t.title) + '</span>' +
-        '<span class="t2">' + esc(t.artist) + '</span></span>' +
+        '<span class="t2">' + esc(artistText(t.artist)) + '</span></span>' +
       '</div>' +
       '<button data-mact="next">Play next</button>' +
       '<button data-mact="last">Add to queue</button>' +
@@ -1088,10 +1110,38 @@ async function wipeAll() {
 /* ------------------------------------------------------------------ *
  * Boot
  * ------------------------------------------------------------------ */
+// Imports made before album grouping moved to the lead artist keyed albums on
+// the whole "Drake/21 Savage" credit, which split one record across many tiles.
+// Re-key those in place and carry their cover art over.
+async function migrateGroupingKeys() {
+  const artKeys = new Set(await dbKeys('art'));
+  let moved = 0;
+
+  for (const t of state.tracks) {
+    const albumKey = albumKeyFor(t);
+    const artistKey = keyOf(primaryArtist(t.artist));
+    if (t.albumKey === albumKey && t.artistKey === artistKey) continue;
+
+    if (t.albumKey && artKeys.has(t.albumKey) && !artKeys.has(albumKey)) {
+      const blob = await dbGet('art', t.albumKey);
+      if (blob) { await dbPut('art', blob, albumKey); artKeys.add(albumKey); }
+    }
+    t.albumKey = albumKey;
+    t.artistKey = artistKey;
+    await dbPut('tracks', t);
+    moved++;
+  }
+
+  if (!moved) return;
+  const live = new Set(state.tracks.map((t) => t.albumKey));
+  for (const k of artKeys) if (!live.has(k)) await dbDel('art', k);
+}
+
 async function boot() {
   wire();
 
   state.tracks = await dbAll('tracks');
+  await migrateGroupingKeys();
   state.playlists = (await dbAll('playlists')).sort((a, b) => a.createdAt - b.createdAt);
 
   // Album art object URLs, built once up front — one per album, not per track.
