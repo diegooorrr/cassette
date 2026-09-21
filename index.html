@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Cassette</title>
+<meta name="description" content="Your music, stored on your phone. Works with no internet.">
+<meta name="theme-color" content="#0b0b0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cassette">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{
+  --bg:#0b0b0d; --bg2:#141417; --bg3:#1c1c21;
+  --fg:#f4f4f5; --fg2:#a1a1aa; --fg3:#71717a;
+  --accent:#ff9f45; --accent-dim:#c9783020;
+  --line:#26262b;
+  --tabh:calc(50px + env(safe-area-inset-bottom));
+  --minih:62px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  overscroll-behavior:none; -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+svg{display:block}
+h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
+
+/* ---------- app frame ---------- */
+#app{display:flex;flex-direction:column;height:100dvh}
+#top{
+  padding:calc(env(safe-area-inset-top) + 10px) 16px 8px;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  background:linear-gradient(var(--bg),var(--bg) 70%,transparent);
+  position:relative;z-index:5;
+}
+#top h1{font-size:26px;letter-spacing:-.02em}
+#top h1 em{font-style:normal;color:var(--accent)}
+.icon-btn{
+  width:38px;height:38px;border-radius:50%;background:var(--bg3);
+  display:grid;place-items:center;color:var(--fg);
+}
+.icon-btn svg{width:20px;height:20px}
+.icon-btn.active{background:var(--accent);color:#1a1005}
+.top-actions{display:flex;gap:8px}
+
+#searchwrap{padding:0 16px 8px}
+#search{
+  width:100%;padding:11px 14px;border-radius:12px;border:1px solid var(--line);
+  background:var(--bg2);color:var(--fg);font-size:16px;outline:none;
+}
+#search::placeholder{color:var(--fg3)}
+#search:focus{border-color:var(--accent)}
+
+#view{
+  flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:0 0 calc(var(--tabh) + 8px);
+}
+body.has-player #view{padding-bottom:calc(var(--tabh) + var(--minih) + 8px)}
+
+.bar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 16px 10px;color:var(--fg2);font-size:13px;
+  text-transform:uppercase;letter-spacing:.06em;font-weight:600;
+}
+.bar-actions{display:flex;gap:8px}
+
+.btn{
+  padding:9px 18px;border-radius:999px;background:var(--bg3);
+  font-weight:600;font-size:15px;color:var(--fg);
+}
+.btn.small{padding:6px 14px;font-size:13px;text-transform:none;letter-spacing:0}
+.btn.primary{background:var(--accent);color:#1a1005}
+.btn.danger{background:none;color:#f87171;border:1px solid #3b1f22}
+.btn.wide{display:block;width:calc(100% - 32px);margin:12px 16px;text-align:center}
+.btn:active{opacity:.7}
+
+/* ---------- lists ---------- */
+.list{list-style:none;margin:0;padding:0}
+.row{
+  display:flex;align-items:center;gap:12px;padding:8px 16px;
+  min-height:60px;cursor:pointer;
+}
+.row:active{background:var(--bg2)}
+.row.now .t1{color:var(--accent)}
+.meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.t1{font-size:16px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t2{font-size:13.5px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dur{font-size:13px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.num{width:26px;text-align:center;color:var(--fg3);font-size:14px;font-variant-numeric:tabular-nums;flex:none}
+.more{width:34px;height:40px;display:grid;place-items:center;color:var(--fg3);flex:none}
+.more svg{width:18px;height:18px;fill:currentColor}
+.chev{color:var(--fg3)}
+.chev-svg{width:16px;height:16px}
+.list.compact .row{min-height:52px;padding:6px 16px}
+
+/* ---------- artwork ---------- */
+.art{
+  background:var(--bg3);background-size:cover;background-position:center;
+  border-radius:8px;flex:none;display:grid;place-items:center;color:var(--fg3);
+  overflow:hidden;
+}
+.art.empty svg{width:45%;height:45%}
+.art.sm{width:46px;height:46px}
+.art.lg{width:100%;aspect-ratio:1;border-radius:10px}
+.art.hero{width:180px;height:180px;border-radius:14px;box-shadow:0 18px 44px #0009;margin:0 auto}
+.art.xl{width:100%;aspect-ratio:1;border-radius:16px;box-shadow:0 24px 60px #000a}
+.art.round{border-radius:50%}
+
+/* ---------- grid ---------- */
+.grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:18px 14px;padding:4px 16px 16px;
+}
+.card{display:flex;flex-direction:column;gap:6px;text-align:left;min-width:0}
+.card:active{opacity:.7}
+.c1{font-size:14.5px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.c2{font-size:13px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:-4px}
+
+/* ---------- detail ---------- */
+.back{display:flex;align-items:center;gap:4px;padding:6px 16px 2px;color:var(--accent);font-size:15px}
+.hero-wrap{text-align:center;padding:12px 20px 18px}
+.hero-wrap h1{font-size:23px;margin-top:16px}
+.hero-wrap .sub{margin:6px 0 0;color:var(--fg2);font-size:14px}
+.hero-actions{display:flex;gap:10px;justify-content:center;margin-top:16px;flex-wrap:wrap}
+
+/* ---------- empty / hints ---------- */
+.empty-state{text-align:center;padding:70px 32px}
+.es-icon{width:76px;height:76px;margin:0 auto 20px;border-radius:22px;background:var(--bg3);display:grid;place-items:center;color:var(--accent)}
+.es-icon svg{width:38px;height:38px}
+.empty-state h2{font-size:20px}
+.empty-state p{color:var(--fg2);font-size:15px;margin:10px 0 22px;line-height:1.5}
+.hint{color:var(--fg2);font-size:14.5px;padding:20px 20px;text-align:center;line-height:1.5}
+.hint.small{padding:8px 16px;text-align:left;font-size:13.5px}
+
+/* ---------- settings ---------- */
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 16px}
+.stats div{background:var(--bg2);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:2px}
+.stats b{font-size:20px;font-weight:650}
+.stats span{font-size:12.5px;color:var(--fg2)}
+.about{padding:10px 16px 0}
+.about h3{font-size:15px;margin-bottom:8px}
+.about p{color:var(--fg2);font-size:14px;line-height:1.55;margin:0 0 10px}
+
+/* ---------- tabs ---------- */
+#tabs{
+  position:fixed;left:0;right:0;bottom:0;z-index:40;height:var(--tabh);
+  padding-bottom:env(safe-area-inset-bottom);
+  display:grid;grid-template-columns:repeat(5,1fr);
+  background:#101013f2;backdrop-filter:saturate(180%) blur(20px);
+  border-top:1px solid var(--line);
+}
+.tab{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--fg3);font-size:10.5px;font-weight:550}
+.tab svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tab.active{color:var(--accent)}
+
+/* ---------- mini player ---------- */
+#mini{
+  position:fixed;left:8px;right:8px;bottom:calc(var(--tabh) + 6px);z-index:45;
+  height:var(--minih);display:flex;align-items:center;gap:12px;padding:0 8px 0 8px;
+  background:#1c1c21f2;backdrop-filter:saturate(180%) blur(20px);
+  border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 30px #0007;
+  overflow:hidden;
+}
+#mini[hidden]{display:none}
+.mini-art .art{width:46px;height:46px;border-radius:7px}
+.mini-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.mini-title{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini-artist{font-size:12.5px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini-play,.mini-next{width:42px;height:42px;display:grid;place-items:center;border-radius:50%;flex:none}
+.mini-play:active,.mini-next:active{background:var(--bg3)}
+.mini-bar{position:absolute;left:0;bottom:0;height:2px;width:100%;background:#ffffff14}
+.mini-bar span{display:block;height:100%;width:0;background:var(--accent);transition:width .25s linear}
+
+/* ---------- now playing sheet ---------- */
+#sheet{
+  position:fixed;inset:0;z-index:60;background:linear-gradient(180deg,#191920,#0b0b0d 55%);
+  transform:translateY(100%);transition:transform .32s cubic-bezier(.32,.72,0,1);
+  display:flex;flex-direction:column;
+  padding:calc(env(safe-area-inset-top) + 8px) 22px calc(env(safe-area-inset-bottom) + 14px);
+  overflow-y:auto;
+}
+#sheet.open{transform:translateY(0)}
+.np-close{align-self:center;width:44px;height:26px;display:grid;place-items:center;color:var(--fg2);flex:none}
+.np-close i{display:block;width:38px;height:5px;border-radius:3px;background:#ffffff2e}
+.np-art{margin:14px 0 26px}
+.np-info{min-width:0}
+.np-title{font-size:22px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.np-artist{font-size:16px;color:var(--fg2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.np-album{font-size:13px;color:var(--fg3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+#seek{
+  -webkit-appearance:none;appearance:none;width:100%;height:24px;margin:18px 0 0;background:none;
+}
+#seek::-webkit-slider-runnable-track{height:5px;border-radius:3px;background:#ffffff1f}
+#seek::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--fg);margin-top:-4.5px}
+#seek::-moz-range-track{height:5px;border-radius:3px;background:#ffffff1f}
+#seek::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;background:var(--fg)}
+.np-times{display:flex;justify-content:space-between;font-size:12px;color:var(--fg3);font-variant-numeric:tabular-nums;margin-top:-2px}
+
+.np-controls{display:flex;align-items:center;justify-content:space-between;margin:22px 0 8px}
+.np-controls button{width:56px;height:56px;display:grid;place-items:center;border-radius:50%;color:var(--fg)}
+.np-controls button svg{width:26px;height:26px;fill:currentColor}
+.np-play{background:var(--fg)!important;color:#0b0b0d!important;width:66px!important;height:66px!important}
+.np-shuffle,.np-repeat{color:var(--fg3)!important;position:relative}
+.np-shuffle.on,.np-repeat.on{color:var(--accent)!important}
+.np-shuffle svg,.np-repeat svg{width:21px!important;height:21px!important;fill:none!important;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.rep-one{position:absolute;bottom:9px;font-size:9px;font-weight:800;color:var(--accent)}
+.np-queue{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}
+.np-queue h4{font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--fg2);padding:0 0 6px}
+.np-queue .row{padding-left:0;padding-right:0}
+
+/* ---------- action menu ---------- */
+#menu{position:fixed;inset:0;z-index:80;background:#000000a6;display:none;align-items:flex-end;padding:12px}
+#menu.open{display:flex}
+.menu-card{
+  width:100%;background:var(--bg3);border-radius:16px;overflow:hidden;
+  padding-bottom:env(safe-area-inset-bottom);
+  animation:rise .22s cubic-bezier(.32,.72,0,1);
+}
+@keyframes rise{from{transform:translateY(16px);opacity:.4}to{transform:none;opacity:1}}
+.menu-head{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.menu-card button{display:block;width:100%;text-align:left;padding:15px 16px;font-size:16px;border-bottom:1px solid var(--line)}
+.menu-card button:active{background:#ffffff0f}
+.menu-card button.danger{color:#f87171}
+.menu-card button.cancel{color:var(--fg2);text-align:center;font-weight:600;border-bottom:0}
+
+/* ---------- import progress + toast ---------- */
+#import-progress{
+  position:fixed;left:12px;right:12px;bottom:calc(var(--tabh) + 12px);z-index:70;
+  background:var(--bg3);border:1px solid var(--line);border-radius:12px;padding:12px 14px;
+  box-shadow:0 10px 34px #0008;
+}
+.ip-text{font-size:14px;font-weight:600}
+.ip-file{font-size:12px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.ip-bar{height:4px;border-radius:2px;background:#ffffff1a;margin-top:9px;overflow:hidden}
+.ip-bar span{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+
+#toast{
+  position:fixed;left:50%;transform:translate(-50%,14px);bottom:calc(var(--tabh) + 16px);z-index:90;
+  background:#2a2a31;color:var(--fg);padding:11px 18px;border-radius:999px;font-size:14px;
+  opacity:0;pointer-events:none;transition:.24s;box-shadow:0 8px 26px #0008;max-width:88vw;text-align:center;
+}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+
+body.dragging{outline:3px dashed var(--accent);outline-offset:-10px}
+body.sheet-open #view{overflow:hidden}
+.fatal{padding:60px 24px;text-align:center;color:var(--fg2)}
+
+#splash{position:fixed;inset:0;background:var(--bg);display:grid;place-items:center;z-index:200}
+#splash div{width:58px;height:58px;border-radius:17px;background:var(--bg3);display:grid;place-items:center;color:var(--accent);animation:pulse 1.3s ease-in-out infinite}
+#splash svg{width:30px;height:30px}
+@keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header id="top">
+    <h1>Cass<em>ette</em></h1>
+    <div class="top-actions">
+      <button class="icon-btn" id="searchbtn" aria-label="Search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+      </button>
+      <button class="icon-btn" id="addbtn" aria-label="Add music">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="searchwrap" hidden>
+    <input id="search" type="search" placeholder="Songs, artists, albums" autocomplete="off" autocorrect="off" spellcheck="false">
+  </div>
+
+  <main id="view"></main>
+</div>
+
+<div id="mini" hidden>
+  <span class="mini-art"></span>
+  <span class="mini-meta">
+    <span class="mini-title"></span>
+    <span class="mini-artist"></span>
+  </span>
+  <button class="mini-play" aria-label="Play"></button>
+  <button class="mini-next" aria-label="Next">
+    <svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 5.5v13l9-6.5z" fill="currentColor"/><rect x="16" y="5.5" width="2.6" height="13" rx="1.1" fill="currentColor"/></svg>
+  </button>
+  <span class="mini-bar"><span></span></span>
+</div>
+
+<section id="sheet" aria-label="Now playing">
+  <button class="np-close" aria-label="Close"><i></i></button>
+  <div class="np-art"></div>
+  <div class="np-info">
+    <div class="np-title"></div>
+    <div class="np-artist"></div>
+    <div class="np-album"></div>
+  </div>
+  <input id="seek" type="range" min="0" max="100" step="0.1" value="0" aria-label="Seek">
+  <div class="np-times"><span class="np-cur">0:00</span><span class="np-dur">0:00</span></div>
+
+  <div class="np-controls">
+    <button class="np-shuffle" aria-label="Shuffle">
+      <svg viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+    </button>
+    <button class="np-prev" aria-label="Previous">
+      <svg viewBox="0 0 24 24"><path d="M18 5.5v13l-9-6.5z" fill="currentColor"/><rect x="5.4" y="5.5" width="2.6" height="13" rx="1.1" fill="currentColor"/></svg>
+    </button>
+    <button class="np-play" aria-label="Play"></button>
+    <button class="np-next" aria-label="Next">
+      <svg viewBox="0 0 24 24"><path d="M6 5.5v13l9-6.5z" fill="currentColor"/><rect x="16" y="5.5" width="2.6" height="13" rx="1.1" fill="currentColor"/></svg>
+    </button>
+    <button class="np-repeat" aria-label="Repeat">
+      <svg viewBox="0 0 24 24"><path d="M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      <span class="rep-one" hidden>1</span>
+    </button>
+  </div>
+
+  <div class="np-queue"></div>
+</section>
+
+<nav id="tabs">
+  <button class="tab active" data-view="songs">
+    <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    Songs
+  </button>
+  <button class="tab" data-view="albums">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></svg>
+    Albums
+  </button>
+  <button class="tab" data-view="artists">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
+    Artists
+  </button>
+  <button class="tab" data-view="playlists">
+    <svg viewBox="0 0 24 24"><path d="M4 7h11M4 12h11M4 17h7"/><circle cx="18" cy="16" r="2.6"/><path d="M20.6 16V8.5"/></svg>
+    Lists
+  </button>
+  <button class="tab" data-view="settings">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1 2 2 0 1 1-4 0 1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 15a2 2 0 1 1 0-4 1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9.6 4.4a2 2 0 1 1 4 0 1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7 2 2 0 1 1 0 4 1.6 1.6 0 0 0-1.5 1z"/></svg>
+    Library
+  </button>
+</nav>
+
+<div id="menu"></div>
+<div id="toast"></div>
+
+<div id="import-progress" hidden>
+  <div class="ip-text">Importing</div>
+  <div class="ip-file"></div>
+  <div class="ip-bar"><span></span></div>
+</div>
+
+<div id="splash"><div>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+</div></div>
+
+<input id="file" type="file" accept="audio/*,.mp3,.m4a,.flac,.wav,.aac,.ogg,.opus,.aiff" multiple hidden>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
